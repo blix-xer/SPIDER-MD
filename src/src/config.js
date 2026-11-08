@@ -1,4 +1,3 @@
-
 export const config = {
   botName: "SPIDER-MD",
   prefix: ".",
