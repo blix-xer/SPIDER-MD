@@ -1,0 +1,21 @@
+
+# Dependencies
+node_modules/
+
+# WhatsApp session credentials
+session/
+auth_info/
+creds.json/
+
+# Environment variables
+.env
+.env.*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Operating system files
+.DS_Store
+Thumbs.db
