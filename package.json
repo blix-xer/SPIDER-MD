@@ -1,0 +1,14 @@
+{
+  "name": "spider-md",
+  "version": "1.0.0",
+  "description": "A lightweight modular WhatsApp bot framework",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "latest",
+    "pino": "latest"
+  }
+}
