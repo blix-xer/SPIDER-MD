@@ -1,0 +1,17 @@
+{
+  "name": "spider-md",
+  "version": "1.0.0",
+  "description": "SPIDER-MD WhatsApp bot foundation",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
