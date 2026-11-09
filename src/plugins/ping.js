@@ -1,6 +1,8 @@
+
 export const ping = {
     name: "ping",
     aliases: ["p"],
+    category: "GENERAL",
     description: "Check bot response speed",
 
     async execute(sock, message) {
