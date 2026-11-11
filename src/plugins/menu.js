@@ -9,8 +9,8 @@ export const menu = {
 
     async execute(sock, message, args, context = {}) {
         const user = message.pushName || "BLIX";
-
         const commands = context.plugins || [];
+
         const categories = [
             "OWNER",
             "AI",
@@ -20,35 +20,38 @@ export const menu = {
             "GENERAL"
         ];
 
-        let output = `┌─[ SYSTEM IDENTITY ]
-│
-├─ OWNER    : ${config.ownerName}
-├─ USER     : ${user}
-├─ VERSION  : ${config.version}
-├─ PLATFORM : ${config.platform}
-├─ MODE     : ${config.mode.toUpperCase()}
-├─ STATUS   : ONLINE
-│
-└─[ SPIDER NETWORK ACTIVE ]
+        const mode = String(config.mode || "private").toUpperCase();
+
+        let output = `*╭━━━〔 SPIDER-MD 〕━━━╮*
+*┃ ⬢ SYSTEM IDENTITY*
+┃
+┃  ⬡ *OWNER*    : ${config.ownerName}
+┃  ⬡ *USER*     : ${user}
+┃  ⬡ *VERSION*  : ${config.version}
+┃  ⬡ *PLATFORM* : ${config.platform}
+┃  ⬡ *MODE*     : ${mode}
+┃  ⬡ *STATUS*   : ONLINE
+┃
+*╰━━━〔 SPIDER NETWORK ACTIVE 〕━━━╯*
 `;
 
         for (const category of categories) {
             const categoryCommands = commands.filter(
-                plugin => plugin.category === category
+                plugin => String(plugin.category || "").toUpperCase() === category
             );
 
             if (categoryCommands.length === 0) continue;
 
-            output += `╭─〔 ${category} COMMANDS 〕\n`;
+            output += `\n*╭━━〔 ${category} 〕━━╮*\n`;
 
             for (const plugin of categoryCommands) {
-                output += `│\n├─ .${plugin.name}\n`;
+                output += `┃ ⬢ .${plugin.name}\n`;
             }
 
-            output += "╰────────────────────\n";
+            output += "*╰━━━━━━━━━━━━━━━━╯*\n";
         }
 
-        output += `\n[SPIDER-MD/${config.ownerName}]`;
+        output += `\n_Developed for SPIDER-MD • ${config.ownerName}_`;
 
         await sock.sendMessage(
             message.key.remoteJid,
