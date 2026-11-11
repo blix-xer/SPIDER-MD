@@ -1,62 +1,82 @@
 
-import { ping } from "./plugins/ping.js";
-import { menu } from "./plugins/menu.js";
+import { config } from "./config.js";
 
-const pluginList = [
+import { ping } from "./plugins/ping.js";
+import { alive } from "./plugins/alive.js";
+
+const plugins = [
     ping,
-    menu
+    alive
 ];
 
-const plugins = new Map();
+function getMessageText(message) {
+    let content = message.message;
 
-for (const plugin of pluginList) {
-    const names = [
-        plugin.name,
-        ...(plugin.aliases || [])
-    ];
+    while (content) {
+        const next =
+            content.ephemeralMessage?.message ||
+            content.viewOnceMessage?.message ||
+            content.viewOnceMessageV2?.message;
 
-    for (const name of names) {
-        plugins.set(name.toLowerCase(), plugin);
+        if (!next) break;
+        content = next;
     }
+
+    return (
+        content?.conversation ||
+        content?.extendedTextMessage?.text ||
+        content?.imageMessage?.caption ||
+        content?.videoMessage?.caption ||
+        content?.documentMessage?.caption ||
+        ""
+    );
 }
 
 export async function handleMessage(sock, message) {
-    if (!message.message || message.key.fromMe) return;
+    if (!message?.message || message.key?.fromMe) return;
 
-    const jid = message.key.remoteJid;
+    const text = getMessageText(message).trim();
 
-    const text =
-        message.message.conversation ||
-        message.message.extendedTextMessage?.text ||
-        "";
+    if (!text.startsWith(config.prefix)) return;
 
-    if (!text.startsWith(".")) return;
+    const body = text.slice(config.prefix.length).trim();
+    const match = body.match(/^(\S+)(?:\s+([\s\S]*))?$/);
 
-    const args = text
-        .slice(1)
-        .trim()
-        .split(/\s+/);
+    if (!match) return;
 
-    const command = args.shift()?.toLowerCase();
+    const command = match[1].toLowerCase();
+    const rawArgs = match[2] || "";
 
-    if (!command) return;
-
-    const plugin = plugins.get(command);
+    const plugin = plugins.find(item =>
+        item.name === command ||
+        (item.aliases || []).includes(command)
+    );
 
     if (!plugin) return;
 
-    try {
-        await plugin.execute(
-            sock,
-            message,
-            args,
-            { plugins: pluginList }
-        );
-    } catch (error) {
-        console.error("Plugin error:", error);
+    const args = rawArgs.trim()
+        ? rawArgs.trim().split(/\s+/)
+        : [];
 
-        await sock.sendMessage(jid, {
-            text: "An error occurred while executing this command."
+    if (["setalive", "getalive", "resetalive"].includes(command)) {
+        args.unshift(command);
+    }
+
+    try {
+        await plugin.execute(sock, message, args, {
+            plugins,
+            rawArgs,
+            commandName: command
         });
+    } catch (error) {
+        console.error(`[SPIDER-MD] ${command} error:`, error);
+
+        await sock.sendMessage(
+            message.key.remoteJid,
+            {
+                text: `⚠️ *${command.toUpperCase()} ERROR*\n\n_Unable to complete this command. Check the server logs._`
+            },
+            { quoted: message }
+        );
     }
 }
