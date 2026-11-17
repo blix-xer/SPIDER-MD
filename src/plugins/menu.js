@@ -1,4 +1,3 @@
-
 import fs from "node:fs/promises";
 import path from "node:path";
 import { downloadMediaMessage } from "@whiskeysockets/baileys";
@@ -26,7 +25,29 @@ const CATEGORY_ORDER = [
     "STALK",
     "SUPPORT",
     "TOOLS",
-    "WHATSAPP"
+    "WHATSAPP",
+    "GENERAL",
+    "OWNER"
+];
+
+const WHATSAPP_COMMANDS = [
+    "whois",
+    "vv",
+    "jid",
+    "pp",
+    "delete",
+    "clear",
+    "archive",
+    "unarchive",
+    "chatpin",
+    "unpin",
+    "block",
+    "unblock",
+    "setbio",
+    "setname",
+    "forward",
+    "caption",
+    "msgpin"
 ];
 
 function unwrapMessage(message) {
@@ -211,9 +232,23 @@ function buildMenu(message, context, mode) {
         }
 
         categories.get(category).add(plugin.name.toLowerCase());
+
+        if (
+            category === "DOWNLOAD" &&
+            Array.isArray(plugin.aliases) &&
+            plugin.aliases.includes("yta")
+        ) {
+            categories.get("DOWNLOAD").add("yta");
+        }
     }
 
-    // Menu customization commands are always displayed under TOOLS.
+    // Add WhatsApp commands without changing the existing menu design.
+    for (const command of WHATSAPP_COMMANDS) {
+        categories.get("WHATSAPP").add(command);
+    }
+
+    categories.get("MANAGE").add("dlt");
+
     for (const command of [
         "setimage",
         "getimage",
@@ -240,7 +275,6 @@ function buildMenu(message, context, mode) {
 ┃│  *MODE* : ${mode}
 ┃│  *PLUGINS* : ${plugins.length}
 ┃│  *PLATFORM* : ${config.platform || "UNKNOWN"}
-┃│  *STATUS* : ONLINE
 ┃│  *VERSION* : ${config.version || "1.0.0"}
 ┃│  *UPTIME* : ${formatUptime(process.uptime())}
 ┃│  *DATE* : ${dateTime}
@@ -267,7 +301,6 @@ function buildMenu(message, context, mode) {
         menuText += `┃\n╰━━━━━━━━━━━━━━\n\n`;
     }
 
-    // Preserve any additional registered categories after the requested order.
     const extraCategories = [...categories.keys()]
         .filter(category => !CATEGORY_ORDER.includes(category))
         .sort();
@@ -291,7 +324,7 @@ function buildMenu(message, context, mode) {
 
     menuText +=
 `╭━━━━━━━━━━━━━━━━━━
-┃  SPIDER-MD/BLIX-XER
+┃  SPIDER-MD
 ╰━━━━━━━━━━━━━━━━━━`;
 
     return menuText;
