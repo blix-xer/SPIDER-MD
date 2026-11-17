@@ -1,463 +1,468 @@
-
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
-import { downloadContentFromMessage } from "@whiskeysockets/baileys";
+import pino from "pino";
+
+import { downloadMediaMessage } from "@whiskeysockets/baileys";
 import { config } from "../config.js";
+import { isOwnerMessage } from "../utils/identity.js";
 
-const DATA_DIR = path.resolve("data");
-const CONFIG_FILE = path.join(DATA_DIR, "alive.json");
+const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_FILE = path.join(DATA_DIR, "alive.json");
 const MEDIA_DIR = path.join(DATA_DIR, "alive-media");
+const MAX_MEDIA_SIZE = 25 * 1024 * 1024;
 
-const DEFAULT_TEMPLATE = `Hy &sender, I am alive now!
+const mediaLogger = pino({ level: "silent" });
 
-╭━━〔 &botname 〕━━╮
-┃
-┃  ⬢ STATUS   : ONLINE
-┃  ⬢ OWNER    : &owner
-┃  ⬢ USER     : &user
-┃  ⬢ PLATFORM : &platform
-┃  ⬢ MODE     : &mode
-┃  ⬢ RUNTIME  : &runtime
-┃  ⬢ RAM      : &ram
-┃  ⬢ PREFIX   : &prefix
-┃  ⬢ VERSION  : &version
-┃  ⬢ DATE     : &date
-┃  ⬢ TIME     : &time
-┃  ⬢ SPEED    : &speed
-┃
-╰━━━━━━━━━━━━━━━━━━╯
+const DEFAULT_TEMPLATE = [
+    "Hy &sender I am alive now",
+    "",
+    "PLATFORM: &platform",
+    "RUNTIME: &runtime",
+    "",
+    "&botname is alive hello &user",
+    "",
+    "Ram : &ram",
+    "Prefix : &prefix",
+    "Mode : &mode",
+    "Platform : &platform",
+    "Date : &date",
+    "Speed : &speed",
+    "Runtime : &runtime",
+    "Version : &version",
+    "Sender : &sender",
+    "",
+    "&quote",
+    "",
+    "By : &author"
+].join("\n");
 
-_&botname • System operational._`;
-
-function ensureStorage() {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.mkdirSync(MEDIA_DIR, { recursive: true });
-
-    if (!fs.existsSync(CONFIG_FILE)) {
-        saveSettings({
-            template: DEFAULT_TEMPLATE,
-            media: null
-        });
-    }
+function isOwner(sock, message) {
+    return isOwnerMessage(sock, message, config.ownerNumber);
 }
 
-function readSettings() {
-    ensureStorage();
-
+async function readData() {
     try {
-        const saved = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+        const raw = await fs.readFile(DATA_FILE, "utf8");
+        const data = JSON.parse(raw);
 
-        return {
-            template: typeof saved.template === "string"
-                ? saved.template
-                : DEFAULT_TEMPLATE,
-            media: saved.media || null
-        };
-    } catch {
-        return {
-            template: DEFAULT_TEMPLATE,
-            media: null
-        };
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+            return {};
+        }
+
+        return data;
+    } catch (error) {
+        if (error.code === "ENOENT") return {};
+        throw error;
     }
 }
 
-function saveSettings(settings) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+async function saveData(data) {
+    await fs.mkdir(DATA_DIR, { recursive: true });
 
-    fs.writeFileSync(
-        CONFIG_FILE,
-        JSON.stringify(settings, null, 2)
+    const temporary = `${DATA_FILE}.tmp`;
+
+    await fs.writeFile(
+        temporary,
+        JSON.stringify(data, null, 2),
+        "utf8"
     );
+
+    await fs.rename(temporary, DATA_FILE);
 }
 
-function normalize(number) {
-    return String(number || "").replace(/\D/g, "");
-}
+function getMessageContent(message) {
+    let content = message?.message;
 
-function getSenderNumber(message) {
-    const jid =
-        message.key.participant ||
-        message.key.remoteJid ||
-        "";
-
-    return normalize(
-        jid.split("@")[0].split(":")[0]
-    );
-}
-
-function isOwner(message) {
-    const owner = normalize(config.ownerNumber);
-    const sender = getSenderNumber(message);
-
-    return Boolean(owner && sender && owner === sender);
-}
-
-function getMode() {
-    try {
-        const saved = JSON.parse(
-            fs.readFileSync(path.resolve("data/mode.json"), "utf8")
-        );
-
-        return saved.mode === "public" ? "public" : "private";
-    } catch {
-        return String(config.mode || "private").toLowerCase();
-    }
-}
-
-function formatUptime(seconds) {
-    const days = Math.floor(seconds / 86400);
-    const hours = Math.floor((seconds % 86400) / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
-
-    return `${days}d ${hours}h ${minutes}m ${secs}s`;
-}
-
-function unwrapMessage(message) {
-    let content = message;
-
-    while (content) {
+    for (let i = 0; i < 10 && content; i++) {
         const next =
             content.ephemeralMessage?.message ||
             content.viewOnceMessage?.message ||
-            content.viewOnceMessageV2?.message;
+            content.viewOnceMessageV2?.message ||
+            content.viewOnceMessageV2Extension?.message ||
+            content.documentWithCaptionMessage?.message;
 
         if (!next) break;
-
         content = next;
     }
 
     return content || {};
 }
 
-function getQuotedMessage(message) {
-    const content = unwrapMessage(message.message || {});
-    const extended = content.extendedTextMessage;
+function getContextInfo(message) {
+    const content = getMessageContent(message);
 
-    if (!extended?.contextInfo?.quotedMessage) {
+    return (
+        content.extendedTextMessage?.contextInfo ||
+        content.imageMessage?.contextInfo ||
+        content.videoMessage?.contextInfo ||
+        content.documentMessage?.contextInfo ||
+        null
+    );
+}
+
+function getQuotedMessage(message) {
+    const context = getContextInfo(message);
+
+    if (!context?.quotedMessage || !context?.stanzaId) {
         return null;
     }
 
     return {
-        content: unwrapMessage(extended.contextInfo.quotedMessage),
-        contextInfo: extended.contextInfo
+        key: {
+            remoteJid: message.key.remoteJid,
+            id: context.stanzaId,
+            participant: context.participant,
+            fromMe: false
+        },
+        message: context.quotedMessage
     };
 }
 
-function getMediaType(content) {
-    if (content.imageMessage) return "image";
-    if (content.videoMessage) return "video";
+function getQuotedMediaType(quoted) {
+    if (!quoted?.message) return null;
+
+    let content = quoted.message;
+
+    for (let i = 0; i < 10 && content; i++) {
+        const next =
+            content.ephemeralMessage?.message ||
+            content.viewOnceMessage?.message ||
+            content.viewOnceMessageV2?.message ||
+            content.viewOnceMessageV2Extension?.message ||
+            content.documentWithCaptionMessage?.message;
+
+        if (!next) break;
+        content = next;
+    }
+
+    if (content?.imageMessage) return "image";
+    if (content?.videoMessage) return "video";
 
     return null;
 }
 
-async function downloadMedia(mediaMessage, type) {
-    const stream = await downloadContentFromMessage(
-        mediaMessage,
-        type
-    );
+function formatDuration(seconds) {
+    const total = Math.floor(seconds);
 
-    const chunks = [];
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
 
-    for await (const chunk of stream) {
-        chunks.push(chunk);
-    }
+    const clock = [hours, minutes, secs]
+        .map(value => String(value).padStart(2, "0"))
+        .join(":");
 
-    return Buffer.concat(chunks);
+    return days > 0 ? `${days}d ${clock}` : clock;
 }
 
-function getExtension(type, mediaMessage) {
-    const mime = mediaMessage.mimetype || "";
-
-    if (type === "image") {
-        if (mime.includes("png")) return ".png";
-        if (mime.includes("webp")) return ".webp";
-        return ".jpg";
+function formatBytes(bytes) {
+    if (bytes >= 1024 ** 3) {
+        return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
     }
 
-    if (mime.includes("webm")) return ".webm";
-    return ".mp4";
+    if (bytes >= 1024 ** 2) {
+        return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+    }
+
+    return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
-async function saveQuotedMedia(message) {
-    const quoted = getQuotedMessage(message);
-
-    if (!quoted) {
-        throw new Error("Reply to a photo or video first.");
-    }
-
-    const type = getMediaType(quoted.content);
-
-    if (!type) {
-        throw new Error("The replied message must contain a photo or video.");
-    }
-
-    const mediaMessage = quoted.content[
-        type === "image" ? "imageMessage" : "videoMessage"
-    ];
-
-    const buffer = await downloadMedia(mediaMessage, type);
-
-    if (!buffer.length) {
-        throw new Error("Unable to download the replied media.");
-    }
-
-    const extension = getExtension(type, mediaMessage);
-
-    fs.mkdirSync(MEDIA_DIR, { recursive: true });
-
-    const filename = `alive${extension}`;
-    const filepath = path.join(MEDIA_DIR, filename);
-
-    for (const oldFile of fs.readdirSync(MEDIA_DIR)) {
-        fs.unlinkSync(path.join(MEDIA_DIR, oldFile));
-    }
-
-    fs.writeFileSync(filepath, buffer);
-
-    return {
-        type,
-        filename,
-        mimetype: mediaMessage.mimetype || ""
-    };
-}
-
-function getQuotedText(message) {
-    const quoted = getQuotedMessage(message);
-
-    if (!quoted) return "None";
-
-    const content = quoted.content;
-
-    return (
-        content.conversation ||
-        content.extendedTextMessage?.text ||
-        content.imageMessage?.caption ||
-        content.videoMessage?.caption ||
-        "Media message"
-    );
-}
-
-function getVariables(message, startedAt) {
-    const now = new Date();
-    const memory = process.memoryUsage();
-
-    const senderJid =
-        message.key.participant ||
-        message.key.remoteJid ||
+function getSender(message) {
+    const jid =
+        message?.key?.participant ||
+        message?.key?.remoteJid ||
         "";
 
-    const senderName = message.pushName || "User";
+    const number = jid.split("@")[0].split(":")[0];
 
-    const quoted = getQuotedMessage(message);
-    const quotedSender =
-        quoted?.contextInfo?.participant || "Unknown";
-
-    const variables = {
-        botname: config.botName || "SPIDER-MD",
-        owner: config.ownerName || "BLIX-XER",
-        user: senderName,
-        ram: `${(memory.rss / 1024 / 1024).toFixed(2)} MB`,
-        prefix: config.prefix || ".",
-        mode: getMode().toUpperCase(),
-        platform: config.platform || os.platform(),
-        date: now.toLocaleDateString(),
-        time: now.toLocaleTimeString(),
-        speed: `${Date.now() - startedAt} ms`,
-        runtime: formatUptime(process.uptime()),
-        uptime: formatUptime(process.uptime()),
-        version: config.version || "1.0.0",
-        sender: senderName,
-        quote: getQuotedText(message),
-        author: quotedSender
-    };
-
-    const result = {};
-
-    for (const [key, value] of Object.entries(variables)) {
-        result[`&${key}`] = String(value);
-        result[`{${key}}`] = String(value);
-    }
-
-    result["&senderid"] = senderJid;
-    result["{senderid}"] = senderJid;
-
-    return result;
+    return message?.pushName ||
+        config.ownerName ||
+        number ||
+        "Owner";
 }
 
-function renderTemplate(template, variables) {
+function renderTemplate(template, message, speed) {
+    const now = new Date();
+
+    const date = new Intl.DateTimeFormat("en-IN", {
+        timeZone: "Asia/Kolkata",
+        dateStyle: "long"
+    }).format(now);
+
+    const time = new Intl.DateTimeFormat("en-IN", {
+        timeZone: "Asia/Kolkata",
+        timeStyle: "medium"
+    }).format(now);
+
+    const sender = getSender(message);
+    const user = message?.pushName || sender;
+
+    const values = {
+        "&botname": String(config.botName || "SPIDER-MD"),
+        "&owner": String(config.ownerName || "BLIX-XER"),
+        "&user": String(user),
+        "&ram": formatBytes(process.memoryUsage().rss),
+        "&prefix": String(config.prefix || "."),
+        "&mode": String(config.mode || "private"),
+        "&platform": String(config.platform || process.platform),
+        "&date": date,
+        "&time": time,
+        "&speed": `${speed} ms`,
+        "&runtime": formatDuration(process.uptime()),
+        "&version": String(config.version || "1.0.0"),
+        "&sender": sender,
+        "&quote": "SPIDER-MD is online and ready.",
+        "&author": String(config.ownerName || "BLIX-XER")
+    };
+
     return String(template).replace(
-        /&[a-z]+|\{[a-z]+\}/gi,
-        match => variables[match] ?? match
+        /&(?:botname|owner|user|ram|prefix|mode|platform|date|time|speed|runtime|version|sender|quote|author)\b/gi,
+        match => values[match.toLowerCase()] ?? match
     );
+}
+
+async function saveQuotedMedia(sock, message, data) {
+    const quoted = getQuotedMessage(message);
+
+    if (!quoted) return false;
+
+    const mediaType = getQuotedMediaType(quoted);
+
+    if (!mediaType) return false;
+
+    const buffer = await downloadMediaMessage(
+        quoted,
+        "buffer",
+        {},
+        {
+            logger: mediaLogger,
+            reuploadRequest: sock.updateMediaMessage
+        }
+    );
+
+    if (!buffer || !buffer.length) {
+        throw new Error("The replied media could not be downloaded.");
+    }
+
+    if (buffer.length > MAX_MEDIA_SIZE) {
+        throw new Error("Media is too large. Maximum supported size is 25 MB.");
+    }
+
+    await fs.mkdir(MEDIA_DIR, { recursive: true });
+
+    const extension = mediaType === "video" ? "mp4" : "jpg";
+    const fileName = `alive.${extension}`;
+    const filePath = path.join(MEDIA_DIR, fileName);
+    const temporary = `${filePath}.tmp`;
+
+    await fs.writeFile(temporary, buffer);
+    await fs.rename(temporary, filePath);
+
+    data.media = {
+        type: mediaType,
+        file: fileName
+    };
+
+    return true;
 }
 
 async function sendAlive(sock, message) {
-    const startedAt = Date.now();
-    const settings = readSettings();
+    const jid = message.key.remoteJid;
+    const started = Date.now();
+
+    const data = await readData();
+
+    const template =
+        typeof data.template === "string"
+            ? data.template
+            : DEFAULT_TEMPLATE;
 
     const caption = renderTemplate(
-        settings.template,
-        getVariables(message, startedAt)
+        template,
+        message,
+        Date.now() - started
     );
 
-    if (settings.media?.filename) {
-        const filepath = path.join(
-            MEDIA_DIR,
-            path.basename(settings.media.filename)
-        );
+    if (
+        data.media?.file &&
+        ["image", "video"].includes(data.media.type)
+    ) {
+        const mediaPath = path.join(MEDIA_DIR, data.media.file);
 
-        if (fs.existsSync(filepath)) {
-            const buffer = fs.readFileSync(filepath);
+        try {
+            const buffer = await fs.readFile(mediaPath);
 
-            if (settings.media.type === "video") {
-                return sock.sendMessage(
-                    message.key.remoteJid,
+            if (data.media.type === "video") {
+                return await sock.sendMessage(
+                    jid,
                     {
                         video: buffer,
+                        caption,
                         gifPlayback: true,
-                        caption
+                        mimetype: "video/mp4"
                     },
                     { quoted: message }
                 );
             }
 
-            return sock.sendMessage(
-                message.key.remoteJid,
+            return await sock.sendMessage(
+                jid,
                 {
                     image: buffer,
                     caption
                 },
                 { quoted: message }
             );
+        } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+
+            delete data.media;
+            await saveData(data);
         }
     }
 
     return sock.sendMessage(
-        message.key.remoteJid,
+        jid,
         { text: caption },
         { quoted: message }
     );
 }
 
-export const alive = {
-    name: "alive",
-    aliases: ["status"],
-    category: "GENERAL",
-    description: "Customizable SPIDER-MD alive system",
+export const alivePlugins = [
+    {
+        name: "alive",
+        category: "GENERAL",
+        description: "Show bot alive status",
 
-    async execute(sock, message, args, context = {}) {
-        const action = (args[0] || "").toLowerCase();
-        const rawArgs = String(context.rawArgs || "").trim();
+        async execute(sock, message) {
+            await sendAlive(sock, message);
+        }
+    },
 
-        if (action === "setalive" || action === "set") {
-            if (!isOwner(message)) {
-                return sock.sendMessage(
-                    message.key.remoteJid,
-                    { text: "⛔ _Only the bot owner can customize Alive._" },
-                    { quoted: message }
+    {
+        name: "setalive",
+        category: "GENERAL",
+        description: "Customize alive message and media",
+
+        async execute(sock, message, args, context = {}) {
+            if (!isOwner(sock, message)) return;
+
+            const data = await readData();
+
+            const rawArgs = String(
+                context.rawArgs || args.join(" ")
+            );
+
+            let mediaSaved = false;
+
+            if (getQuotedMessage(message)) {
+                mediaSaved = await saveQuotedMedia(
+                    sock,
+                    message,
+                    data
                 );
-            }
-
-            const quoted = getQuotedMessage(message);
-
-            if (quoted) {
-                try {
-                    const media = await saveQuotedMedia(message);
-                    const settings = readSettings();
-
-                    settings.media = media;
-                    saveSettings(settings);
-
-                    return sock.sendMessage(
-                        message.key.remoteJid,
-                        {
-                            text: `*╭━━〔 ALIVE MEDIA UPDATED 〕━━╮*\n┃\n┃  ⬢ Type: ${media.type.toUpperCase()}\n┃  ⬢ GIF playback: ${media.type === "video" ? "Enabled" : "Not applicable"}\n┃  ⬢ Storage: Persistent\n┃\n*╰━━━━━━━━━━━━━━━━━━━━━━━━╯*`
-                        },
-                        { quoted: message }
-                    );
-                } catch (error) {
-                    return sock.sendMessage(
-                        message.key.remoteJid,
-                        { text: `⚠️ ${error.message}` },
-                        { quoted: message }
-                    );
-                }
             }
 
             const template = rawArgs
-                .replace(/^(setalive|set)\s*/i, "")
+                .replace(/\\n/g, "\n")
                 .trim();
 
-            if (!template) {
-                return sock.sendMessage(
-                    message.key.remoteJid,
-                    {
-                        text: "*ALIVE CUSTOMIZATION*\n\n⬢ .setalive Your custom message\n⬢ Reply to a photo/video with .setalive\n\nAvailable variables:\n&botname &owner &user &ram &prefix &mode &platform &date &time &speed &runtime &version &sender &quote &author"
-                    },
-                    { quoted: message }
-                );
+            if (template) {
+                data.template = template;
             }
 
-            const settings = readSettings();
-            settings.template = template;
-            saveSettings(settings);
+            if (mediaSaved || template) {
+                data.updatedAt = new Date().toISOString();
+                await saveData(data);
+            }
+
+            let response = "";
+
+            if (mediaSaved) {
+                response +=
+                    `Alive ${data.media.type} saved successfully.\n`;
+            }
+
+            if (template) {
+                response +=
+                    "Alive message template updated successfully.\n";
+            }
+
+            if (!response) {
+                response =
+                    "Reply to a photo/video with .setalive to save media.\n\n" +
+                    "Or use:\n" +
+                    ".setalive Hy &sender I am alive now\\nRuntime: &runtime";
+            }
 
             return sock.sendMessage(
                 message.key.remoteJid,
-                { text: "✅ _Your custom Alive message has been saved._" },
+                { text: response.trim() },
                 { quoted: message }
             );
         }
+    },
 
-        if (action === "getalive" || action === "get") {
-            if (!isOwner(message)) {
-                return sock.sendMessage(
-                    message.key.remoteJid,
-                    { text: "⛔ _Only the bot owner can view Alive settings._" },
-                    { quoted: message }
-                );
-            }
+    {
+        name: "getalive",
+        category: "GENERAL",
+        description: "View alive message settings",
 
-            const settings = readSettings();
+        async execute(sock, message) {
+            if (!isOwner(sock, message)) return;
+
+            const data = await readData();
+
+            const template =
+                typeof data.template === "string"
+                    ? data.template
+                    : DEFAULT_TEMPLATE;
+
+            const mediaStatus = data.media
+                ? `${data.media.type} (${data.media.file})`
+                : "No media configured";
 
             return sock.sendMessage(
                 message.key.remoteJid,
                 {
-                    text: `*╭━━〔 ALIVE CONFIGURATION 〕━━╮*\n┃\n┃  ⬢ Media: ${settings.media?.type || "None"}\n┃  ⬢ Template:\n┃\n${settings.template}\n┃\n*╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯*`
+                    text:
+                        "ALIVE SETTINGS\n\n" +
+                        "Template:\n" + template +
+                        "\n\nMedia: " + mediaStatus +
+                        "\n\nPlaceholders:\n" +
+                        "&botname, &owner, &user, &ram, &prefix, " +
+                        "&mode, &platform, &date, &time, &speed, " +
+                        "&runtime, &version, &sender, &quote, &author"
                 },
                 { quoted: message }
             );
         }
+    },
 
-        if (action === "resetalive" || action === "reset") {
-            if (!isOwner(message)) {
-                return sock.sendMessage(
-                    message.key.remoteJid,
-                    { text: "⛔ _Only the bot owner can reset Alive._" },
-                    { quoted: message }
-                );
-            }
+    {
+        name: "resetalive",
+        category: "GENERAL",
+        description: "Reset alive message settings",
 
-            if (fs.existsSync(MEDIA_DIR)) {
-                for (const file of fs.readdirSync(MEDIA_DIR)) {
-                    fs.unlinkSync(path.join(MEDIA_DIR, file));
-                }
-            }
+        async execute(sock, message) {
+            if (!isOwner(sock, message)) return;
 
-            saveSettings({
-                template: DEFAULT_TEMPLATE,
-                media: null
+            await fs.rm(DATA_FILE, { force: true });
+            await fs.rm(MEDIA_DIR, {
+                recursive: true,
+                force: true
             });
 
             return sock.sendMessage(
                 message.key.remoteJid,
-                { text: "✅ _Alive message and media restored to defaults._" },
+                {
+                    text: "Alive settings and media have been reset."
+                },
                 { quoted: message }
             );
         }
-
-        return sendAlive(sock, message);
     }
-};
+];
+
+export { DEFAULT_TEMPLATE };
